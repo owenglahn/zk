@@ -31,12 +31,12 @@ import org.apache.zookeeper.KeeperException.Code;
 //		you manage the code more modularly.
 //	REMEMBER !! ZK client library is single thread - Watches & CallBacks should not be used for time consuming tasks.
 //		Ideally, Watches & CallBacks should only be used to assign the "work" to a separate thread inside your program.
-public class DistProcess implements Watcher
-																		, AsyncCallback.ChildrenCallback
+public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 {
 	ZooKeeper zk;
 	String zkServer, pinfo;
 	boolean isMaster=false;
+	List<String> workers;
 	boolean initalized=false;
 
 	DistProcess(String zkhost)
@@ -58,10 +58,14 @@ public class DistProcess implements Watcher
 		{
 			runForMaster();	// See if you can become the master (i.e, no other master exists)
 			isMaster=true;
+			workers = new ArrayList<>();
 			getTasks(); // Install monitoring on any new tasks that will be created.
 									// TODO monitor for worker tasks?
 		}catch(NodeExistsException nee)
-		{ isMaster=false; } // TODO: What else will you need if this was a worker process?
+		{
+			isMaster=false;
+
+		} // TODO: What else will you need if this was a worker process?
 		catch(UnknownHostException uhe)
 		{ System.out.println(uhe); }
 		catch(KeeperException ke)
@@ -104,7 +108,7 @@ public class DistProcess implements Watcher
 		if(e.getType() == Watcher.Event.EventType.None) // This seems to be the event type associated with connections.
 		{
 			// Once we are connected, do our intialization stuff.
-			if(e.getPath() == null && e.getState() ==  Watcher.Event.KeeperState.SyncConnected && initalized == false) 
+			if(e.getPath() == null && e.getState() ==  Watcher.Event.KeeperState.SyncConnected && initalized == false)
 			{
 				initalize();
 				initalized = true;
