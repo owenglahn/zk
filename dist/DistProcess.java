@@ -37,6 +37,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 	String zkServer, pinfo;
 	boolean isMaster=false;
 	boolean initalized=false;
+	Optional<WorkerCallback> workerCallback;
 
 	DistProcess(String zkhost)
 	{
@@ -57,12 +58,15 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 		{
 			runForMaster();	// See if you can become the master (i.e, no other master exists)
 			isMaster=true;
+			workerCallback = Optional.of(new WorkerCallback());
 			getTasks(); // Install monitoring on any new tasks that will be created.
+			getWorkers(); // monitor workers
 									// TODO monitor for worker tasks?
 		}catch(NodeExistsException nee)
 		{
 			isMaster=false;
 			try {
+				// TODO: when the worker is on longer idle, remove it from znode
 				registerAsWorker();
 			} catch (InterruptedException e) {
 				e.printStackTrace();
@@ -85,6 +89,11 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 	void getTasks()
 	{
 		zk.getChildren("/dist02/tasks", this, this, null);
+	}
+
+	// may also need to make the watcher the worker callback
+	void getWorkers() {
+		zk.getChildren("/dist02/workers", this, workerCallback.get(), null);
 	}
 
 	// Try to become the master.
@@ -188,6 +197,10 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 			catch(IOException io){System.out.println(io);}
 			catch(ClassNotFoundException cne){System.out.println(cne);}
 		}
+	}
+
+	public void retrieveTasks(List<String> children) {
+
 	}
 
 	public static void main(String args[]) throws Exception
