@@ -12,6 +12,9 @@ import java.net.*;
 
 //To get the process id.
 import java.lang.management.*;
+import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.BlockingQueue;
+import java.util.concurrent.LinkedBlockingQueue;
 
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.ZooDefs.Ids;
@@ -31,7 +34,7 @@ import org.apache.zookeeper.KeeperException.Code;
 //		you manage the code more modularly.
 //	REMEMBER !! ZK client library is single thread - Watches & CallBacks should not be used for time consuming tasks.
 //		Ideally, Watches & CallBacks should only be used to assign the "work" to a separate thread inside your program.
-public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
+public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, AsyncCallback.DataCallback
 {
 	ZooKeeper zk;
 	String zkServer, pinfo;
@@ -93,7 +96,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 
 	// may also need to make the watcher the worker callback
 	void getWorkers() {
-		zk.getChildren("/dist02/workers", this, workerCallback.get(), null);
+		zk.getChildren("/dist02/workers", workerCallback.get(), workerCallback.get(), null);
 	}
 
 	// Try to become the master.
@@ -105,7 +108,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 	}
 
 	void registerAsWorker() throws InterruptedException, KeeperException {
-		zk.create("/dist02/workers", pinfo.getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+		zk.create("/dist02/workers", pinfo.getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT_SEQUENTIAL);
 	}
 
 	public void process(WatchedEvent e)
@@ -141,6 +144,19 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 		}
 	}
 
+	@Override
+	public void processResult(int rc, String path, Object ctx, byte[] taskData, Stat stat) {
+		System.out.println("DISTAPP : processResult : " + rc + ":" + path + ":" + ctx);
+		String idleWorker = workerCallback.get().getIdleWorker();
+		try {
+			zk.create("/dist02/workers/" + idleWorker, taskData, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+		} catch (KeeperException e) {
+			throw new RuntimeException(e);
+		} catch (InterruptedException e) {
+			throw new RuntimeException(e);
+		}
+	}
+
 	//Asynchronous callback that is invoked by the zk.getChildren request.
 	public void processResult(int rc, String path, Object ctx, List<String> children)
 	{
@@ -171,6 +187,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 
 				//TODO!! This is not a good approach, you should get the data using an async version of the API.
 				byte[] taskSerial = zk.getData("/dist02/tasks/"+c, false, null);
+				zk.getData("/dist02/tasks/" + c, false, null, null);
 
 				// Re-construct our task object.
 				ByteArrayInputStream bis = new ByteArrayInputStream(taskSerial);
@@ -199,10 +216,6 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 		}
 	}
 
-	public void retrieveTasks(List<String> children) {
-
-	}
-
 	public static void main(String args[]) throws Exception
 	{
 		//Create a new process
@@ -212,5 +225,47 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback
 
 		//Replace this with an approach that will make sure that the process is up and running forever.
 		Thread.sleep(20000); 
+	}
+
+
+	/**
+	 * Used to keep track of new workers nodes
+	 */
+	private class WorkerCallback implements Watcher, AsyncCallback.ChildrenCallback {
+		// blocking queue maybe
+		private BlockingQueue<String> availableWorkers;
+
+		WorkerCallback() {
+			availableWorkers = new LinkedBlockingQueue<>();
+		}
+
+		// blocking
+		String getIdleWorker() {
+			try {
+				return availableWorkers.take();
+			} catch (InterruptedException e) {
+				throw new RuntimeException("Unable to get idle worker");
+			}
+		}
+
+		@Override
+		public void processResult(int rc, String path, Object ctx, List<String> children) {
+			System.out.println("WORKER CALLBACK: processResult : " + rc + ":" + path + ":" + ctx);
+			synchronized (availableWorkers) {
+				availableWorkers.clear();
+				availableWorkers.addAll(children);
+			}
+		}
+
+		@Override
+		public void process(WatchedEvent watchedEvent) {
+			if(watchedEvent.getType() == Watcher.Event.EventType.NodeChildrenChanged &&
+					watchedEvent.getPath().equals("/dist02/workers"))
+			{
+				// There has been changes to the children of the node.
+				// We are going to re-install the Watch as well as request for the list of the children.
+				getWorkers();
+			}
+		}
 	}
 }
