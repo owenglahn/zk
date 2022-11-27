@@ -16,6 +16,7 @@ import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 
+import jline.console.completer.ArgumentCompleter;
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.KeeperException.*;
@@ -69,7 +70,6 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		{
 			isMaster=false;
 			try {
-				// TODO: when the worker is on longer idle, remove it from znode
 				registerAsWorker();
 			} catch (InterruptedException e) {
 				e.printStackTrace();
@@ -94,7 +94,6 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		zk.getChildren("/dist02/tasks", this, this, null);
 	}
 
-	// may also need to make the watcher the worker callback
 	void getWorkers() {
 		zk.getChildren("/dist02/workers", workerCallback.get(), workerCallback.get(), null);
 	}
@@ -108,7 +107,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 	}
 
 	void registerAsWorker() throws InterruptedException, KeeperException {
-		zk.create("/dist02/workers", pinfo.getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT_SEQUENTIAL);
+		zk.create("/dist02/workers/worker-", pinfo.getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT_SEQUENTIAL);
 	}
 
 	public void process(WatchedEvent e)
@@ -149,7 +148,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		System.out.println("DISTAPP : processResult : " + rc + ":" + path + ":" + ctx);
 		String idleWorker = workerCallback.get().getIdleWorker();
 		try {
-			zk.create("/dist02/workers/" + idleWorker, taskData, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+			zk.create("/dist02/workers/" + idleWorker + "/task", taskData, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
 		} catch (KeeperException e) {
 			throw new RuntimeException(e);
 		} catch (InterruptedException e) {
@@ -227,9 +226,8 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		Thread.sleep(20000); 
 	}
 
-
 	/**
-	 * Used to keep track of new workers nodes
+	 * Used to keep track of new worker nodes
 	 */
 	private class WorkerCallback implements Watcher, AsyncCallback.ChildrenCallback {
 		// blocking queue maybe
@@ -251,9 +249,25 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		@Override
 		public void processResult(int rc, String path, Object ctx, List<String> children) {
 			System.out.println("WORKER CALLBACK: processResult : " + rc + ":" + path + ":" + ctx);
+			/**
+			 * Make concurrent calls to zk to set available workers
+			 */
 			synchronized (availableWorkers) {
 				availableWorkers.clear();
-				availableWorkers.addAll(children);
+				children.forEach(child -> new Thread(() -> {
+					try {
+						// check if there is task
+						if (zk.exists("/dist02/workers/" + child + "/task", false) == null) {
+							synchronized (availableWorkers) {
+								availableWorkers.add(child);
+							}
+						}
+					} catch (KeeperException e) {
+						throw new RuntimeException(e);
+					} catch (InterruptedException e) {
+						throw new RuntimeException(e);
+					}
+				}).start());
 			}
 		}
 
