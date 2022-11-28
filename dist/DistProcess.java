@@ -61,7 +61,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		{
 			runForMaster();	// See if you can become the master (i.e, no other master exists)
 			isMaster=true;
-			workerCallback = Optional.of(new WorkerCallback());
+			workerCallback = Optional.of(new WorkerCallback()); // optional because node might be master
 			getTasks(); // Install monitoring on any new tasks that will be created.
 			getWorkers(); // monitor workers
 									// TODO monitor for worker tasks?
@@ -118,7 +118,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		//!! IMPORTANT !!
 		// Do not perform any time consuming/waiting steps here
 		//	including in other functions called from here.
-		// 	Your will be essentially holding up ZK client library 
+		// 	Your will be essentially holding up ZK client library
 		//	thread and you will not get other notifications.
 		//	Instead include another thread in your program logic that
 		//   does the time consuming "work" and notify that thread from here.
@@ -164,7 +164,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		//!! IMPORTANT !!
 		// Do not perform any time consuming/waiting steps here
 		//	including in other functions called from here.
-		// 	Your will be essentially holding up ZK client library 
+		// 	Your will be essentially holding up ZK client library
 		//	thread and you will not get other notifications.
 		//	Instead include another thread in your program logic that
 		//   does the time consuming "work" and notify that thread from here.
@@ -197,7 +197,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 				//Execute the task.
 				//TODO: Again, time consuming stuff. Should be done by some other thread and not inside a callback!
 				dt.compute();
-				
+
 				// Serialize our Task object back to a byte array!
 				ByteArrayOutputStream bos = new ByteArrayOutputStream();
 				ObjectOutputStream oos = new ObjectOutputStream(bos);
@@ -224,7 +224,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		dt.startProcess();
 
 		//Replace this with an approach that will make sure that the process is up and running forever.
-		Thread.sleep(20000); 
+		Thread.sleep(20000);
 	}
 
 
@@ -248,16 +248,17 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			}
 		}
 
-		@Override
+		@Override // processResult is for ChildrenCallback. To retrieve children of the node
 		public void processResult(int rc, String path, Object ctx, List<String> children) {
 			System.out.println("WORKER CALLBACK: processResult : " + rc + ":" + path + ":" + ctx);
 			synchronized (availableWorkers) {
+				// TODO: this logic is broken, it adds all workers and they might not be available
 				availableWorkers.clear();
 				availableWorkers.addAll(children);
 			}
 		}
 
-		@Override
+		@Override // for Watcher, called when a new node is added in the system.
 		public void process(WatchedEvent watchedEvent) {
 			if(watchedEvent.getType() == Watcher.Event.EventType.NodeChildrenChanged &&
 					watchedEvent.getPath().equals("/dist02/workers"))
