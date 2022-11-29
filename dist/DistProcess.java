@@ -15,6 +15,7 @@ import java.lang.management.*;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.stream.Collectors;
 
 import jline.console.completer.ArgumentCompleter;
 import org.apache.zookeeper.*;
@@ -249,25 +250,29 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		@Override
 		public void processResult(int rc, String path, Object ctx, List<String> children) {
 			System.out.println("WORKER CALLBACK: processResult : " + rc + ":" + path + ":" + ctx);
+			List<String> idleWorkers = new ArrayList<>();
 			/**
 			 * Make concurrent calls to zk to set available workers
+			 *
+			 * If there is still available workers, don't block while we're getting new idle workers
 			 */
-			synchronized (availableWorkers) {
-				availableWorkers.clear();
-				children.forEach(child -> new Thread(() -> {
-					try {
-						// check if there is task
-						if (zk.exists("/dist02/workers/" + child + "/task", false) == null) {
-							synchronized (availableWorkers) {
-								availableWorkers.add(child);
-							}
+			children.forEach(child -> new Thread(() -> {
+				try {
+					// check if there is no task
+					if (zk.exists("/dist02/workers/" + child + "/task", false) == null) {
+						synchronized (idleWorkers) {
+							idleWorkers.add(child);
 						}
-					} catch (KeeperException e) {
-						throw new RuntimeException(e);
-					} catch (InterruptedException e) {
-						throw new RuntimeException(e);
 					}
-				}).start());
+				} catch (KeeperException e) {
+					throw new RuntimeException(e);
+				} catch (InterruptedException e) {
+					throw new RuntimeException(e);
+				}
+			}).start());
+			synchronized (availableWorkers) {
+				idleWorkers.removeAll(availableWorkers);
+				availableWorkers.addAll(idleWorkers);
 			}
 		}
 
