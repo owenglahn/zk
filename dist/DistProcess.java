@@ -12,9 +12,7 @@ import java.net.*;
 
 //To get the process id.
 import java.lang.management.*;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
 import jline.console.completer.ArgumentCompleter;
@@ -238,7 +236,6 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			availableWorkers = new LinkedBlockingQueue<>();
 		}
 
-		// blocking
 		String getIdleWorker() {
 			try {
 				return availableWorkers.take();
@@ -255,8 +252,10 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			 * Make concurrent calls to zk to set available workers
 			 *
 			 * If there is still available workers, don't block while we're getting new idle workers
+			 *
+			 * Parallel Stream to prevent excessive blocking
 			 */
-			children.forEach(child -> new Thread(() -> {
+			children.parallelStream().forEach((child) -> {
 				try {
 					// check if there is no task
 					if (zk.exists("/dist02/workers/" + child + "/task", false) == null) {
@@ -269,7 +268,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 				} catch (InterruptedException e) {
 					throw new RuntimeException(e);
 				}
-			}).start());
+			});
 			synchronized (availableWorkers) {
 				idleWorkers.removeAll(availableWorkers);
 				availableWorkers.addAll(idleWorkers);
