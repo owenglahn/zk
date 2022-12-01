@@ -15,12 +15,10 @@ import java.lang.management.*;
 import java.util.concurrent.*;
 import java.util.stream.Collectors;
 
-import jline.console.completer.ArgumentCompleter;
 import org.apache.zookeeper.*;
 import org.apache.zookeeper.ZooDefs.Ids;
 import org.apache.zookeeper.KeeperException.*;
 import org.apache.zookeeper.data.*;
-import org.apache.zookeeper.KeeperException.Code;
 
 // TODO
 // Replace 02 with your group number.
@@ -106,7 +104,8 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 	}
 
 	void registerAsWorker() throws InterruptedException, KeeperException {
-		zk.create("/dist02/workers/worker-", pinfo.getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT_SEQUENTIAL);
+		// set false as flag for has task
+		zk.create("/dist02/workers/worker-", null, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
 	}
 
 	public void process(WatchedEvent e)
@@ -145,14 +144,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 	@Override
 	public void processResult(int rc, String path, Object ctx, byte[] taskData, Stat stat) {
 		System.out.println("DISTAPP : processResult : " + rc + ":" + path + ":" + ctx);
-		String idleWorker = workerCallback.get().getIdleWorker();
-		try {
-			zk.create("/dist02/workers/" + idleWorker + "/task", taskData, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
-		} catch (KeeperException e) {
-			throw new RuntimeException(e);
-		} catch (InterruptedException e) {
-			throw new RuntimeException(e);
-		}
+		workerCallback.get().issueTask(taskData);
 	}
 
 	//Asynchronous callback that is invoked by the zk.getChildren request.
@@ -184,8 +176,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 				// that should be moved done by a process function as the worker.
 
 				//TODO!! This is not a good approach, you should get the data using an async version of the API.
-				byte[] taskSerial = zk.getData("/dist02/tasks/"+c, false, null);
-				zk.getData("/dist02/tasks/" + c, false, null, null);
+				zk.getData("/dist02/tasks/" + c, false, this, null);
 
 				// Re-construct our task object.
 				ByteArrayInputStream bis = new ByteArrayInputStream(taskSerial);
@@ -236,42 +227,41 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			availableWorkers = new LinkedBlockingQueue<>();
 		}
 
-		String getIdleWorker() {
+		void issueTask(byte[] task) {
 			try {
-				return availableWorkers.take();
+				String idleWorker = availableWorkers.take();
+				zk.setData("/dist02/workers/" + idleWorker, task, 0);
 			} catch (InterruptedException e) {
 				throw new RuntimeException("Unable to get idle worker");
+			} catch (KeeperException e) {
+				throw new RuntimeException(e);
 			}
 		}
 
 		@Override
 		public void processResult(int rc, String path, Object ctx, List<String> children) {
 			System.out.println("WORKER CALLBACK: processResult : " + rc + ":" + path + ":" + ctx);
-			List<String> idleWorkers = new ArrayList<>();
 			/**
 			 * Make concurrent calls to zk to set available workers
 			 *
-			 * If there is still available workers, don't block while we're getting new idle workers
-			 *
-			 * Parallel Stream to prevent excessive blocking
+			 * Get new workers from this callback
 			 */
-			children.parallelStream().forEach((child) -> {
-				try {
-					// check if there is no task
-					if (zk.exists("/dist02/workers/" + child + "/task", false) == null) {
-						synchronized (idleWorkers) {
-							idleWorkers.add(child);
-						}
-					}
-				} catch (KeeperException e) {
-					throw new RuntimeException(e);
-				} catch (InterruptedException e) {
-					throw new RuntimeException(e);
-				}
-			});
+			children = children.parallelStream().filter(child ->
+			{
+				// separate condition like this to prevent unnecessary calls to zk cluster
+				if (!availableWorkers.contains(child))
+					 try {
+						 return zk.getData("/dist02/workers/" + child, false,
+								  null).toString() == null;
+					 } catch (KeeperException e) {
+						 throw new RuntimeException(e);
+					 } catch (InterruptedException e) {
+						 throw new RuntimeException(e);
+					 }
+				else return false;
+			}).collect(Collectors.toList());
 			synchronized (availableWorkers) {
-				idleWorkers.removeAll(availableWorkers);
-				availableWorkers.addAll(idleWorkers);
+				availableWorkers.addAll(children);
 			}
 		}
 
