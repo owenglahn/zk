@@ -39,6 +39,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 	boolean isMaster=false;
 	boolean initalized=false;
 	Optional<WorkerCallback> workerCallback;
+	List<String> existingTasks;
 
 	DistProcess(String zkhost)
 	{
@@ -60,6 +61,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			runForMaster();	// See if you can become the master (i.e, no other master exists)
 			isMaster=true;
 			workerCallback = Optional.of(new WorkerCallback());
+			existingTasks = new ArrayList<>();
 			getTasks(); // Install monitoring on any new tasks that will be created.
 			getWorkers(); // monitor workers
 									// TODO monitor for worker tasks?
@@ -104,8 +106,9 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 	}
 
 	void registerAsWorker() throws InterruptedException, KeeperException {
-		// set false as flag for has task
-		zk.create("/dist02/workers/worker-", null, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL_SEQUENTIAL);
+		String workerPath = "/dist02/workers/worker" + ManagementFactory.getRuntimeMXBean().getName();
+		zk.create(workerPath, null, Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
+		zk.addWatch(workerPath, this, AddWatchMode.PERSISTENT);
 	}
 
 	public void process(WatchedEvent e)
@@ -139,12 +142,63 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			// We are going to re-install the Watch as well as request for the list of the children.
 			getTasks();
 		}
+
+		if (e.getType() == Event.EventType.NodeDataChanged) {
+			try {
+				byte[] taskData = zk.getData("/dist02/workers/worker" + ManagementFactory.getRuntimeMXBean().getName(),
+						false, null);
+				if (taskData == null) {
+					return;
+				}
+				// get path for task
+				String[] taskStringComponents = new String(taskData).split("::");
+				String childPath = taskStringComponents[0];
+				System.out.println("Child path for task is: " + childPath);
+
+				// get task itself, might not be a good way to do this
+				taskData = taskStringComponents[1].getBytes();
+
+				// Re-construct our task object.
+				ByteArrayInputStream bis = new ByteArrayInputStream(taskData);
+				ObjectInput in = new ObjectInputStream(bis);
+				DistTask dt = (DistTask) in.readObject();
+				//Execute the task.
+				//TODO: Again, time consuming stuff. Should be done by some other thread and not inside a callback!
+				dt.compute();
+
+				// Serialize our Task object back to a byte array!
+				ByteArrayOutputStream bos = new ByteArrayOutputStream();
+				ObjectOutputStream oos = new ObjectOutputStream(bos);
+				oos.writeObject(dt); oos.flush();
+				taskData = bos.toByteArray();
+
+				// Store it inside the result node.
+				zk.create(childPath + "/result", taskData, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+			} catch (KeeperException ex) {
+				throw new RuntimeException(ex);
+			} catch (InterruptedException ex) {
+				throw new RuntimeException(ex);
+			} catch (IOException ex) {
+				throw new RuntimeException(ex);
+			} catch (ClassNotFoundException ex) {
+				throw new RuntimeException(ex);
+			}
+		}
 	}
 
 	@Override
 	public void processResult(int rc, String path, Object ctx, byte[] taskData, Stat stat) {
 		System.out.println("DISTAPP : processResult : " + rc + ":" + path + ":" + ctx);
-		workerCallback.get().issueTask(taskData);
+		path = path + "::";
+		byte[] taskInfo = new byte[path.getBytes().length + taskData.length];
+		for (int i = 0; i < taskInfo.length; i++) {
+			if (i < path.getBytes().length) {
+				taskInfo[i] = path.getBytes()[i];
+			} else {
+				taskInfo[i] = taskData[i];
+			}
+		}
+		workerCallback.get().issueTask(taskInfo);
 	}
 
 	//Asynchronous callback that is invoked by the zk.getChildren request.
@@ -167,41 +221,14 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		//		The worker must invoke the "compute" function of the Task send by the client.
 		//What to do if you do not have a free worker process?
 		System.out.println("DISTAPP : processResult : " + rc + ":" + path + ":" + ctx);
+		synchronized (existingTasks) {
+			children.removeAll(existingTasks);
+			existingTasks.addAll(children);
+		}
 		for(String c: children)
 		{
 			System.out.println(c);
-			try
-			{
-				//TODO There is quite a bit of worker specific activities here,
-				// that should be moved done by a process function as the worker.
-
-				//TODO!! This is not a good approach, you should get the data using an async version of the API.
-				zk.getData("/dist02/tasks/" + c, false, this, null);
-
-				// Re-construct our task object.
-				ByteArrayInputStream bis = new ByteArrayInputStream(taskSerial);
-				ObjectInput in = new ObjectInputStream(bis);
-				DistTask dt = (DistTask) in.readObject();
-
-				//Execute the task.
-				//TODO: Again, time consuming stuff. Should be done by some other thread and not inside a callback!
-				dt.compute();
-				
-				// Serialize our Task object back to a byte array!
-				ByteArrayOutputStream bos = new ByteArrayOutputStream();
-				ObjectOutputStream oos = new ObjectOutputStream(bos);
-				oos.writeObject(dt); oos.flush();
-				taskSerial = bos.toByteArray();
-
-				// Store it inside the result node.
-				zk.create("/dist02/tasks/"+c+"/result", taskSerial, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-				//zk.create("/dist02/tasks/"+c+"/result", ("Hello from "+pinfo).getBytes(), Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-			}
-			catch(NodeExistsException nee){System.out.println(nee);}
-			catch(KeeperException ke){System.out.println(ke);}
-			catch(InterruptedException ie){System.out.println(ie);}
-			catch(IOException io){System.out.println(io);}
-			catch(ClassNotFoundException cne){System.out.println(cne);}
+			zk.getData("/dist02/tasks/" + c, false, this, null);
 		}
 	}
 
@@ -251,7 +278,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 				// separate condition like this to prevent unnecessary calls to zk cluster
 				if (!availableWorkers.contains(child))
 					 try {
-						 return zk.getData("/dist02/workers/" + child, false,
+						 return zk.getData("/dist02/workers/" + child, this,
 								  null).toString() == null;
 					 } catch (KeeperException e) {
 						 throw new RuntimeException(e);
