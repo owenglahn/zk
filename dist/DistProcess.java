@@ -143,20 +143,17 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			getTasks();
 		}
 
-		if (e.getType() == Event.EventType.NodeDataChanged) {
+		if (e.getType() == Event.EventType.NodeDataChanged && !isMaster) {
 			try {
-				byte[] taskData = zk.getData("/dist02/workers/worker" + ManagementFactory.getRuntimeMXBean().getName(),
+				byte[] taskName = zk.getData("/dist02/workers/worker" + ManagementFactory.getRuntimeMXBean().getName(),
 						false, null);
-				if (taskData == null) {
+				if (taskName == null) {
 					return;
 				}
-				// get path for task
-				String[] taskStringComponents = new String(taskData).split("::");
-				String childPath = taskStringComponents[0];
-				System.out.println("Child path for task is: " + childPath);
 
 				// get task itself, might not be a good way to do this
-				taskData = taskStringComponents[1].getBytes();
+				byte[] taskData = zk.getData(taskName, false, null);
+
 
 				// Re-construct our task object.
 				ByteArrayInputStream bis = new ByteArrayInputStream(taskData);
@@ -195,8 +192,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			if (i < path.getBytes().length) {
 				taskInfo[i] = path.getBytes()[i];
 			} else {
-				taskInfo[i] = taskData[i];
-			}
+				taskInfo[i] = taskData[i]; }
 		}
 		workerCallback.get().issueTask(taskInfo);
 	}
@@ -273,13 +269,14 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			 *
 			 * Get new workers from this callback
 			 */
+			System.out.println("Children is NULL: " + children == null);
 			children = children.parallelStream().filter(child ->
 			{
 				// separate condition like this to prevent unnecessary calls to zk cluster
 				if (!availableWorkers.contains(child))
 					 try {
-						 return zk.getData("/dist02/workers/" + child, this,
-								  null).toString() == null;
+						 return zk.getData("/dist02/workers/" + child, DistProcess.this,
+								  null) == null;
 					 } catch (KeeperException e) {
 						 throw new RuntimeException(e);
 					 } catch (InterruptedException e) {
