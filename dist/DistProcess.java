@@ -41,6 +41,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 	boolean initialized =false;
 	Optional<WorkerCallback> workerCallback;
 
+
 	DistProcess(String zkhost)
 	{
 		zkServer=zkhost;
@@ -52,8 +53,6 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 	void startProcess() throws IOException, UnknownHostException, KeeperException, InterruptedException
 	{
 		zk = new ZooKeeper(zkServer, 10000, this); //connect to ZK.
-		initialize();
-		initialized = true;
 	}
 
 	void initialize()
@@ -110,7 +109,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		return children.stream().filter(child -> {
 			try {
 				List<String> result = zk.getChildren("/dist02/tasks/" + child, false);
-				return result == null || result.isEmpty();
+				return (result == null || result.isEmpty());
 			} catch (KeeperException e) {
 				throw new RuntimeException(e);
 			} catch (InterruptedException e) {
@@ -146,6 +145,8 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 			if(e.getPath() == null && e.getState() ==  Watcher.Event.KeeperState.SyncConnected && initialized == false)
 			{
 				System.out.println("Initializing...");
+				initialize();
+				initialized = true;
 			}
 		}
 
@@ -163,64 +164,73 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		if (e.getType() ==  Event.EventType.NodeDataChanged && isMaster && e.getPath().contains("/dist02/workers/worker")){
 			String workerName = e.getPath().substring("/dist02/workers/".length());
 			System.out.println("Worker now available" + workerName);
-//			zk.getData(e.getPath(), this, workerCallback.get(), null);
+			// zk.getData(e.getPath(), this, workerCallback.get(), null);
 			getWorkers();
 		}
 
 		if (e.getType() == Event.EventType.NodeDataChanged && !isMaster && e.getPath().equals("/dist02/workers/worker"
 				+ ManagementFactory.getRuntimeMXBean().getName())) {
-			try {
-				byte[] taskBytes = zk.getData("/dist02/workers/worker" + pinfo,
-						false, null);
-				String taskName;
-				if (taskBytes != null) {
-					taskName = new String(taskBytes, StandardCharsets.UTF_8);
-				}
-				else {
-					taskName = null;
-				}
-				System.out.println("task name: " + taskName);
-				if (taskName == null) {
-					return;
-				}
+			new Thread(() -> {
+				 try {
+					 byte[] taskBytes = zk.getData("/dist02/workers/worker" + pinfo,
+							  false, null);
+					 String taskName;
+					 if (taskBytes != null) {
+						 taskName = new String(taskBytes, StandardCharsets.UTF_8);
+					 } else {
+						 taskName = null;
+					 }
+					 System.out.println("task name: " + taskName);
+					 if (taskName == null) {
+						 return;
+					 }
 
-				// get task itself, might not be a good way to do this
-				byte[] taskData = zk.getData(taskName, false, null);
+					 // get task itself, might not be a good way to do this
+					 byte[] taskData = zk.getData(taskName, false, null);
 
 
-				// Re-construct our task object.
-				ByteArrayInputStream bis = new ByteArrayInputStream(taskData);
-				ObjectInput in = new ObjectInputStream(bis);
-				DistTask dt = (DistTask) in.readObject();
-				//Execute the task.
-				//TODO: Again, time consuming stuff. Should be done by some other thread and not inside a callback!
-				dt.compute();
+					 // Re-construct our task object.
+					 ByteArrayInputStream bis = new ByteArrayInputStream(taskData);
+					 ObjectInput in = new ObjectInputStream(bis);
+					 DistTask dt = (DistTask) in.readObject();
+					 //Execute the task.
+					 //TODO: Again, time consuming stuff. Should be done by some other thread and not inside a callback!
+					 dt.compute();
 
-				// Serialize our Task object back to a byte array!
-				ByteArrayOutputStream bos = new ByteArrayOutputStream();
-				ObjectOutputStream oos = new ObjectOutputStream(bos);
-				oos.writeObject(dt); oos.flush();
-				taskData = bos.toByteArray();
+					 // Serialize our Task object back to a byte array!
+					 ByteArrayOutputStream bos = new ByteArrayOutputStream();
+					 ObjectOutputStream oos = new ObjectOutputStream(bos);
+					 oos.writeObject(dt);
+					 oos.flush();
+					 taskData = bos.toByteArray();
 
-				// Store it inside the result node.
-				zk.create(taskName + "/result", taskData, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
-				System.out.println("Setting status as idle");
-				zk.setData("/dist02/workers/worker" + pinfo, null, -1);
-			} catch (KeeperException ex) {
-				throw new RuntimeException(ex);
-			} catch (InterruptedException ex) {
-				throw new RuntimeException(ex);
-			} catch (IOException ex) {
-				throw new RuntimeException(ex);
-			} catch (ClassNotFoundException ex) {
-				throw new RuntimeException(ex);
-			}
+					 // Store it inside the result node.
+					 zk.create(taskName + "/result", taskData, Ids.OPEN_ACL_UNSAFE, CreateMode.PERSISTENT);
+					 System.out.println("Setting status as idle");
+					 zk.setData("/dist02/workers/worker" + pinfo, null, -1);
+				 } catch (KeeperException ex) {
+					 try {
+						 System.out.println("Setting status as idle");
+						 zk.setData("/dist02/workers/worker" + pinfo, null, -1);
+					 } catch (KeeperException exc) {
+						 throw new RuntimeException(exc);
+					 } catch (InterruptedException exc) {
+						 throw new RuntimeException(exc);
+					 }
+				 } catch (InterruptedException ex) {
+					 throw new RuntimeException(ex);
+				 } catch (IOException ex) {
+					 throw new RuntimeException(ex);
+				 } catch (ClassNotFoundException ex) {
+					 throw new RuntimeException(ex);
+				 }
+			}).start();
 		}
 	}
 
 	@Override
 	public void processResult(int rc, String path, Object ctx, byte[] taskData, Stat stat) {
-		System.out.println("DISTAPP : processResult : " + rc + ":" + path + ":" + ctx);
+		System.out.println("DISTAPP : DATA CALLBACK: processResult : " + rc + ":" + path + ":" + ctx);
 		workerCallback.get().issueTask(path.getBytes());
 	}
 
@@ -323,7 +333,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 					 }
 				else return false;
 			}).collect(Collectors.toList());
-			availableWorkers.addAll(children);
+			children.stream().forEach(child -> availableWorkers.add(child));
 			System.out.println("availableWorkers length: " + availableWorkers.size());
 		}
 
