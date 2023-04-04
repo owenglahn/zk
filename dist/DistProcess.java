@@ -105,6 +105,8 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		// This is an example of Synchronous API invocation as the function waits for the execution and no callback is involved..
 		zk.create("/dist02/master", pinfo.getBytes(StandardCharsets.UTF_8), Ids.OPEN_ACL_UNSAFE, CreateMode.EPHEMERAL);
 	}
+	// return list of tasks that are not children of znode /dist02/tasks/
+	// i.e. the returned tasks are in the process of completion or have been completed
 	List<String> setExistingTasks(List<String> children) throws InterruptedException, KeeperException {
 		return children.stream().filter(child -> {
 			try {
@@ -125,8 +127,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		zk.addWatch(workerPath, this, AddWatchMode.PERSISTENT);
 	}
 
-	public void process(WatchedEvent e)
-	{
+	public void process(WatchedEvent e) {
 		//Get watcher notifications.
 
 		//!! IMPORTANT !!
@@ -139,8 +140,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 
 		System.out.println("DISTAPP : Event received : " + e);
 
-		if(e.getType() == Watcher.Event.EventType.None) // This seems to be the event type associated with connections.
-		{
+		if(e.getType() == Watcher.Event.EventType.None) // This seems to be the event type associated with connections. {
 			// Once we are connected, do our intialization stuff.
 			if(e.getPath() == null && e.getState() ==  Watcher.Event.KeeperState.SyncConnected && initialized == false)
 			{
@@ -151,8 +151,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		}
 
 		// Master should be notified if any new znodes are added to tasks.
-		if(e.getType() == Watcher.Event.EventType.NodeChildrenChanged && e.getPath().equals("/dist02/tasks"))
-		{
+		if(e.getType() == Watcher.Event.EventType.NodeChildrenChanged && e.getPath().equals("/dist02/tasks")) {
 			// There has been changes to the children of the node.
 			// We are going to re-install the Watch as well as request for the list of the children.
 			getTasks();
@@ -235,24 +234,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 	}
 
 	//Asynchronous callback that is invoked by the zk.getChildren request.
-	public void processResult(int rc, String path, Object ctx, List<String> children)
-	{
-
-		//!! IMPORTANT !!
-		// Do not perform any time consuming/waiting steps here
-		//	including in other functions called from here.
-		// 	Your will be essentially holding up ZK client library 
-		//	thread and you will not get other notifications.
-		//	Instead include another thread in your program logic that
-		//   does the time consuming "work" and notify that thread from here.
-
-		// This logic is for master !!
-		//Every time a new task znode is created by the client, this will be invoked.
-
-		// TODO: Filter out and go over only the newly created task znodes.
-		//		Also have a mechanism to assign these tasks to a "Worker" process.
-		//		The worker must invoke the "compute" function of the Task send by the client.
-		//What to do if you do not have a free worker process?
+	public void processResult(int rc, String path, Object ctx, List<String> children) {
 		System.out.println("DISTAPP : processResult : " + rc + ":" + path + ":" + ctx);
 		try {
 			children = setExistingTasks(children);
@@ -268,8 +250,7 @@ public class DistProcess implements Watcher, AsyncCallback.ChildrenCallback, Asy
 		}
 	}
 
-	public static void main(String args[]) throws Exception
-	{
+	public static void main(String args[]) throws Exception {
 		//Create a new process
 		//Read the ZooKeeper ensemble information from the environment variable.
 		DistProcess dt = new DistProcess(System.getenv("ZKSERVER"));
